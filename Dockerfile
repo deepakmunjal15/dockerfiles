@@ -1,47 +1,99 @@
-FROM python:alpine
+ARG BASE_CONTAINER=jupyter/scipy-notebook
+FROM $BASE_CONTAINER
 
-# Install required packages
-RUN apk add --update --virtual=.build-dependencies alpine-sdk nodejs ca-certificates musl-dev gcc python-dev make cmake g++ gfortran libpng-dev freetype-dev libxml2-dev libxslt-dev
-RUN apk add --update git
+LABEL maintainer="Jupyter Project <jupyter@googlegroups.com>"
 
-# Install Jupyter
-RUN pip install jupyter
-RUN pip install ipywidgets
-RUN jupyter nbextension enable --py widgetsnbextension
+# Set when building on Travis so that certain long-running build steps can
+# be skipped to shorten build time.
+ARG TEST_ONLY_BUILD
 
-# Install JupyterLab
-RUN pip install jupyterlab && jupyter serverextension enable --py jupyterlab
+# Fix DL4006
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# Additional packages for compatability (glibc)
-RUN wget -q -O /etc/apk/keys/sgerrand.rsa.pub https://raw.githubusercontent.com/sgerrand/alpine-pkg-glibc/master/sgerrand.rsa.pub && \
-  wget https://github.com/sgerrand/alpine-pkg-glibc/releases/download/2.23-r3/glibc-2.23-r3.apk && \
-  wget https://github.com/sgerrand/alpine-pkg-glibc/releases/download/2.23-r3/glibc-i18n-2.23-r3.apk && \
-  wget https://github.com/sgerrand/alpine-pkg-glibc/releases/download/2.23-r3/glibc-bin-2.23-r3.apk && \
-  apk add --no-cache glibc-2.23-r3.apk glibc-bin-2.23-r3.apk glibc-i18n-2.23-r3.apk && \
-  rm "/etc/apk/keys/sgerrand.rsa.pub" && \
-  /usr/glibc-compat/bin/localedef --force --inputfile POSIX --charmap UTF-8 C.UTF-8 || true && \
-  echo "export LANG=C.UTF-8" > /etc/profile.d/locale.sh && \
-  ln -s /usr/include/locale.h /usr/include/xlocale.h
+USER root
 
-# Optional Clean-up
-#  RUN apk del glibc-i18n && \
-#  apk del .build-dependencies && \
-#  rm glibc-2.23-r3.apk glibc-bin-2.23-r3.apk glibc-i18n-2.23-r3.apk && \
-#  rm -rf /var/cache/apk/*
+# R pre-requisites
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    fonts-dejavu \
+    gfortran \
+    gcc && \
+    rm -rf /var/lib/apt/lists/*
 
-ENV LANG=C.UTF-8
+# Julia dependencies
+# install Julia packages in /opt/julia instead of $HOME
+ENV JULIA_DEPOT_PATH=/opt/julia
+ENV JULIA_PKGDIR=/opt/julia
+ENV JULIA_VERSION=1.4.1
 
-# Install Python Packages & Requirements (Done near end to avoid invalidating cache)
-COPY requirements.txt requirements.txt
-RUN pip install -r requirements.txt
+WORKDIR /tmp
 
+# hadolint ignore=SC2046
+RUN mkdir "/opt/julia-${JULIA_VERSION}" && \
+    wget -q https://julialang-s3.julialang.org/bin/linux/x64/$(echo "${JULIA_VERSION}" | cut -d. -f 1,2)"/julia-${JULIA_VERSION}-linux-x86_64.tar.gz" && \
+    echo "fd6d8cadaed678174c3caefb92207a3b0e8da9f926af6703fb4d1e4e4f50610a *julia-${JULIA_VERSION}-linux-x86_64.tar.gz" | sha256sum -c - && \
+    tar xzf "julia-${JULIA_VERSION}-linux-x86_64.tar.gz" -C "/opt/julia-${JULIA_VERSION}" --strip-components=1 && \
+    rm "/tmp/julia-${JULIA_VERSION}-linux-x86_64.tar.gz"
+RUN ln -fs /opt/julia-*/bin/julia /usr/local/bin/julia
+
+# Show Julia where conda libraries are \
+RUN mkdir /etc/julia && \
+    echo "push!(Libdl.DL_LOAD_PATH, \"$CONDA_DIR/lib\")" >> /etc/julia/juliarc.jl && \
+    # Create JULIA_PKGDIR \
+    mkdir "${JULIA_PKGDIR}" && \
+    chown "${NB_USER}" "${JULIA_PKGDIR}" && \
+    fix-permissions "${JULIA_PKGDIR}"
+
+USER $NB_UID
+
+# R packages including IRKernel which gets installed globally.
+RUN conda install --quiet --yes \
+    'r-base=3.6.3' \
+    'r-caret=6.0*' \
+    'r-crayon=1.3*' \
+    'r-devtools=2.3*' \
+    'r-forecast=8.12*' \
+    'r-hexbin=1.28*' \
+    'r-htmltools=0.4*' \
+    'r-htmlwidgets=1.5*' \
+    'r-irkernel=1.1*' \
+    'r-nycflights13=1.0*' \
+    'r-plyr=1.8*' \
+    'r-randomforest=4.6*' \
+    'r-rcurl=1.98*' \
+    'r-reshape2=1.4*' \
+    'r-rmarkdown=2.1*' \
+    'r-rsqlite=2.2*' \
+    'r-shiny=1.4*' \
+    'r-tidyverse=1.3*' \
+    'rpy2=3.1*' \
+    && \
+    conda clean --all -f -y && \
+    fix-permissions "${CONDA_DIR}" && \
+    fix-permissions "/home/${NB_USER}"
+
+# Add Julia packages. Only add HDF5 if this is not a test-only build since
+# it takes roughly half the entire build time of all of the images on Travis
+# to add this one package and often causes Travis to timeout.
+#
+# Install IJulia as jovyan and then move the kernelspec out
+# to the system share location. Avoids problems with runtime UID change not
+# taking effect properly on the .local folder in the jovyan home dir.
+RUN julia -e 'import Pkg; Pkg.update()' && \
+    (test $TEST_ONLY_BUILD || julia -e 'import Pkg; Pkg.add("HDF5")') && \
+    julia -e "using Pkg; pkg\"add IJulia\"; pkg\"precompile\"" && \
+    # move kernelspec out of home \
+    mv "${HOME}/.local/share/jupyter/kernels/julia"* "${CONDA_DIR}/share/jupyter/kernels/" && \
+    chmod -R go+rx "${CONDA_DIR}/share/jupyter" && \
+    rm -rf "${HOME}/.local" && \
+    fix-permissions "${JULIA_PKGDIR}" "${CONDA_DIR}/share/jupyter"
+    
+    
+RUN pip install selenium
+RUN sudo apt install firefox
 
 RUN wget https://github.com/mozilla/geckodriver/releases/download/v0.30.0/geckodriver-v0.30.0-linux64.tar.gz
 RUN tar -xvzf geckodriver*
 RUN chmod +x geckodriver
 
-
-# Expose Jupyter port & cmd
-EXPOSE 8888
-RUN mkdir -p /opt/app/data
-CMD jupyter lab --ip=* --port=8888 --no-browser --notebook-dir=/opt/app/data --allow-root
+WORKDIR $HOME
