@@ -44,8 +44,6 @@ RUN mkdir /etc/julia && \
     chown "${NB_USER}" "${JULIA_PKGDIR}" && \
     fix-permissions "${JULIA_PKGDIR}"
 
-RUN sudo apt install firefox
-
 USER $NB_UID
 
 # R packages including IRKernel which gets installed globally.
