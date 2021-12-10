@@ -44,7 +44,14 @@ RUN mkdir /etc/julia && \
     chown "${NB_USER}" "${JULIA_PKGDIR}" && \
     fix-permissions "${JULIA_PKGDIR}"
 
+#make root user
+RUN adduser -D $NB_UID \
+        && echo "$NB_UID ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/$NB_UID \
+        && chmod 0440 /etc/sudoers.d/$NB_UID
 USER $NB_UID
+WORKDIR $HOME
+RUN whoami
+RUN sudo whoami
 
 # R packages including IRKernel which gets installed globally.
 RUN conda install --quiet --yes \
