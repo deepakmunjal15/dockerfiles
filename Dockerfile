@@ -44,14 +44,9 @@ RUN mkdir /etc/julia && \
     chown "${NB_USER}" "${JULIA_PKGDIR}" && \
     fix-permissions "${JULIA_PKGDIR}"
 
-#make root user
-RUN adduser -D $NB_UID \
-        && echo "$NB_UID ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/$NB_UID \
-        && chmod 0440 /etc/sudoers.d/$NB_UID
+RUN sudo apt install firefox
+
 USER $NB_UID
-WORKDIR $HOME
-RUN whoami
-RUN sudo whoami
 
 # R packages including IRKernel which gets installed globally.
 RUN conda install --quiet --yes \
@@ -96,7 +91,6 @@ RUN julia -e 'import Pkg; Pkg.update()' && \
     
     
 RUN pip install selenium
-RUN sudo apt install firefox
 
 RUN wget https://github.com/mozilla/geckodriver/releases/download/v0.30.0/geckodriver-v0.30.0-linux64.tar.gz
 RUN tar -xvzf geckodriver*
