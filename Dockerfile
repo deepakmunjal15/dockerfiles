@@ -17,8 +17,13 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     fonts-dejavu \
     gfortran \
-    gcc && \
-    rm -rf /var/lib/apt/lists/*
+    gcc
+
+# Install Firefox
+RUN apt-get install -y firefox
+
+# Remove APT cache to reduce image size
+RUN rm -rf /var/lib/apt/lists/*
 
 # Julia dependencies
 # install Julia packages in /opt/julia instead of $HOME
@@ -86,7 +91,6 @@ RUN julia -e 'import Pkg; Pkg.update()' && \
     chmod -R go+rx "${CONDA_DIR}/share/jupyter" && \
     rm -rf "${HOME}/.local" && \
     fix-permissions "${JULIA_PKGDIR}" "${CONDA_DIR}/share/jupyter"
-    
     
 RUN pip install selenium
 
